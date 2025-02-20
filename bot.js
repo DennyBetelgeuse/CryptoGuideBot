@@ -5,9 +5,14 @@ const fs = require('fs');
 
 const bot = new Telegraf(process.env.BOT_TOKEN);
 const CHANNEL_USERNAME = '@dennyfun';
+const ADMIN_ID = 546745364; // Ваш ID администратора
 
 // Файл для хранения ID пользователей
 const USER_IDS_FILE = 'user_ids.json';
+
+// Состояние для отслеживания ожидания ссылки и возвращения из "ПРЕДЛОЖИТЬ СТАТЬЮ"
+const waitingForLink = new Map();
+const fromSuggestArticle = new Map(); // Новое состояние для отслеживания возвращения из "ПРЕДЛОЖИТЬ СТАТЬЮ"
 
 // Загружаем сохраненные ID пользователей
 let userIds = [];
@@ -25,14 +30,14 @@ function saveUserId(userId) {
 
 // Google Sheets API setup
 const auth = new google.auth.GoogleAuth({
-    keyFile: 'credentials.json', // Укажи путь к JSON-файлу
+    keyFile: 'credentials.json',
     scopes: ['https://www.googleapis.com/auth/spreadsheets.readonly'],
 });
 
 const sheets = google.sheets({ version: 'v4', auth });
 
 async function getSheetData(range) {
-    const spreadsheetId = 'sheets_id_example'; // ID таблицы
+    const spreadsheetId = '1Uvsn_CE7y-aEwhFANOpuajoOp46emuLguX121a9RvxA';
     const response = await sheets.spreadsheets.values.get({
         spreadsheetId,
         range,
@@ -40,27 +45,23 @@ async function getSheetData(range) {
     return response.data.values || [];
 }
 
-// Функция для получения сообщения из листа "broadcast"
 async function getBroadcastMessage() {
-    const range = 'broadcast!A1:A'; // Считываем весь столбец A
+    const range = 'broadcast!A1:A';
     const data = await getSheetData(range);
     if (data.length > 0) {
-        // Объединяем все строки в одно сообщение
         return data.map(row => row[0]).join('\n');
     }
-    return null; // Если сообщение не найдено
+    return null;
 }
 
 async function checkSubscription(ctx, next) {
     try {
         const chatMember = await ctx.telegram.getChatMember(CHANNEL_USERNAME, ctx.from.id);
         if (['member', 'administrator', 'creator'].includes(chatMember.status)) {
-            return next(); // Если подписан, переходим к следующему обработчику
+            return next();
         } else {
             ctx.reply(
-                `Привет! Теперь все гайды по крипте от известных инфлюенсеров в одном месте и ты их не потеряешь! Чтобы получить доступ, подпишись на канал: https://t.me/dennyfun
-
-После подписки нажми кнопку "ПОДТВЕРДИТЬ"`,
+                `Привет! Теперь все гайды по крипте от известных инфлюенсеров в одном месте и ты их не потеряешь! Чтобы получить доступ, подпишись на канал: https://t.me/dennyfun\n\nПосле подписки нажми кнопку "ПОДТВЕРДИТЬ"`,
                 {
                     reply_markup: {
                         inline_keyboard: [[{ text: 'ПОДТВЕРДИТЬ', callback_data: 'check_subscription' }]]
@@ -79,7 +80,7 @@ bot.action('check_subscription', async (ctx) => {
         const chatMember = await ctx.telegram.getChatMember(CHANNEL_USERNAME, ctx.from.id);
         if (['member', 'administrator', 'creator'].includes(chatMember.status)) {
             ctx.reply('✅ Подписка подтверждена!');
-            setTimeout(() => sendMainMenu(ctx), 1000); // Задержка 1 секунда перед отправкой главного меню
+            setTimeout(() => sendMainMenu(ctx), 1000);
         } else {
             ctx.reply('❌ Ты ещё не подписался! Подпишись на канал и попробуй снова.');
         }
@@ -90,12 +91,12 @@ bot.action('check_subscription', async (ctx) => {
 });
 
 bot.start(checkSubscription, async (ctx) => {
-    saveUserId(ctx.from.id); // Сохраняем ID пользователя
+    saveUserId(ctx.from.id);
     sendMainMenu(ctx);
 });
 
 bot.command('menu', checkSubscription, (ctx) => {
-    saveUserId(ctx.from.id); // Сохраняем ID пользователя
+    saveUserId(ctx.from.id);
     sendMainMenu(ctx);
 });
 
@@ -106,7 +107,6 @@ function sendMainMenu(ctx) {
                 [
                     { text: 'ОСНОВА', callback_data: 'basic' },
                     { text: 'МЕМКОИНЫ', callback_data: 'memecoins' }
-                    
                 ],
                 [
                     { text: 'РЕТРО', callback_data: 'retro' },
@@ -115,6 +115,9 @@ function sendMainMenu(ctx) {
                 [
                     { text: 'DEFI', callback_data: 'defi' },
                     { text: 'AI', callback_data: 'ai' }
+                ],
+                [
+                    { text: 'ПРЕДЛОЖИТЬ СТАТЬЮ', callback_data: 'suggest_article' }
                 ]
             ]
         }
@@ -128,14 +131,9 @@ async function sendSectionData(ctx, section, range) {
             ctx.reply(`В разделе ${section} пока нет данных.`);
             return;
         }
-        let message = `Раздел ${section}:
-\n`;
+        let message = `Раздел ${section}:\n\n`;
         data.forEach((row, index) => {
-            message += `${index + 1}. "${row[0]}"
-автор: ${row[1]}
-канал: ${row[2]}
-гайд: ${row[3]}
-\n`;
+            message += `${index + 1}. "${row[0]}"\nавтор: ${row[1]}\nканал: ${row[2]}\nгайд: ${row[3]}\n\n`;
         });
         ctx.reply(message, {
             disable_web_page_preview: true,
@@ -149,23 +147,70 @@ async function sendSectionData(ctx, section, range) {
     }
 }
 
+// Обработка команды "ПРЕДЛОЖИТЬ СТАТЬЮ"
+bot.action('suggest_article', checkSubscription, (ctx) => {
+    waitingForLink.set(ctx.from.id, true);
+    fromSuggestArticle.set(ctx.from.id, true); // Устанавливаем флаг, что пользователь в "ПРЕДЛОЖИТЬ СТАТЬЮ"
+    ctx.reply('Отправьте ссылку на статью, которую вы хотите предложить:');
+});
+
+// Обработка сообщений от пользователя
+bot.on('text', (ctx) => {
+    if (waitingForLink.get(ctx.from.id)) {
+        const messageText = ctx.message.text;
+        const urlRegex = /(https?:\/\/[^\s]+)/;
+        if (urlRegex.test(messageText)) {
+            ctx.reply('✅ Ваше предложение отправлено на рассмотрение!', {
+                reply_markup: {
+                    inline_keyboard: [[{ text: 'Вернуться в меню', callback_data: 'main_menu' }]]
+                }
+            });
+            
+            bot.telegram.sendMessage(
+                ADMIN_ID,
+                `Новое предложение статьи от @${ctx.from.username || ctx.from.id}:\n${messageText}`
+            );
+            
+            waitingForLink.delete(ctx.from.id);
+            // Оставляем fromSuggestArticle до нажатия "Вернуться в меню"
+        } else {
+            ctx.reply('Пожалуйста, отправьте корректную ссылку (начиная с http:// или https://)');
+        }
+    }
+});
+
+// Обработка возвращения в главное меню
+bot.action('main_menu', async (ctx) => {
+    try {
+        await ctx.deleteMessage();
+        // Проверяем, был ли пользователь в разделе "ПРЕДЛОЖИТЬ СТАТЬЮ"
+        if (fromSuggestArticle.get(ctx.from.id)) {
+            sendMainMenu(ctx);
+            fromSuggestArticle.delete(ctx.from.id); // Удаляем флаг после возвращения
+        }
+        // Для других разделов просто удаляем сообщение
+    } catch (error) {
+        console.error('Ошибка при удалении сообщения:', error);
+        if (fromSuggestArticle.get(ctx.from.id)) {
+            sendMainMenu(ctx);
+            fromSuggestArticle.delete(ctx.from.id);
+        }
+    }
+});
+
 // Команда для рассылки сообщений
 bot.command('broadcast', async (ctx) => {
-    // Проверяем, что команду вызвал администратор (ваш ID)
-    const ADMIN_ID = admin_id_example; // Замените на ваш ID
     if (ctx.from.id !== ADMIN_ID) {
         ctx.reply('У вас нет прав на выполнение этой команды.');
         return;
     }
 
-    // Получаем сообщение из Google Таблицы
     const message = await getBroadcastMessage();
     if (!message) {
         ctx.reply('Сообщение для рассылки не найдено в таблице.');
         return;
     }
 
-    // Рассылка сообщения всем пользователям
     for (const userId of userIds) {
         try {
             await bot.telegram.sendMessage(userId, message);
@@ -190,9 +235,7 @@ bot.action('basic', async (ctx) => {
         sendSectionData(ctx, 'ОСНОВА', 'ОСНОВА!A2:D');
     } else {
         ctx.reply(
-            `Привет! Теперь все гайды по крипте от известных инфлюенсеров в одном месте и ты их не потеряешь! Чтобы получить доступ, подпишись на канал: https://t.me/dennyfun
-
-После подписки нажми кнопку "ПОДТВЕРДИТЬ"`,
+            `Привет! Чтобы получить доступ, подпишись на канал: https://t.me/dennyfun\n\nПосле подписки нажми "ПОДТВЕРДИТЬ"`,
             {
                 reply_markup: {
                     inline_keyboard: [[{ text: 'ПОДТВЕРДИТЬ', callback_data: 'check_subscription' }]]
@@ -208,9 +251,7 @@ bot.action('retro', async (ctx) => {
         sendSectionData(ctx, 'РЕТРО', 'РЕТРО!A2:D');
     } else {
         ctx.reply(
-            `Привет! Теперь все гайды по крипте от известных инфлюенсеров в одном месте и ты их не потеряешь! Чтобы получить доступ, подпишись на канал: https://t.me/dennyfun
-
-После подписки нажми кнопку "ПОДТВЕРДИТЬ"`,
+            `Привет! Чтобы получить доступ, подпишись на канал: https://t.me/dennyfun\n\nПосле подписки нажми "ПОДТВЕРДИТЬ"`,
             {
                 reply_markup: {
                     inline_keyboard: [[{ text: 'ПОДТВЕРДИТЬ', callback_data: 'check_subscription' }]]
@@ -226,9 +267,7 @@ bot.action('memecoins', async (ctx) => {
         sendSectionData(ctx, 'МЕМКОИНЫ', 'МЕМКОИНЫ!A2:D');
     } else {
         ctx.reply(
-            `Привет! Теперь все гайды по крипте от известных инфлюенсеров в одном месте и ты их не потеряешь! Чтобы получить доступ, подпишись на канал: https://t.me/dennyfun
-
-После подписки нажми кнопку "ПОДТВЕРДИТЬ"`,
+            `Привет! Чтобы получить доступ, подпишись на канал: https://t.me/dennyfun\n\nПосле подписки нажми "ПОДТВЕРДИТЬ"`,
             {
                 reply_markup: {
                     inline_keyboard: [[{ text: 'ПОДТВЕРДИТЬ', callback_data: 'check_subscription' }]]
@@ -244,9 +283,7 @@ bot.action('coding', async (ctx) => {
         sendSectionData(ctx, 'КОДИНГ', 'КОДИНГ!A2:D');
     } else {
         ctx.reply(
-            `Привет! Теперь все гайды по крипте от известных инфлюенсеров в одном месте и ты их не потеряешь! Чтобы получить доступ, подпишись на канал: https://t.me/dennyfun
-
-После подписки нажми кнопку "ПОДТВЕРДИТЬ"`,
+            `Привет! Чтобы получить доступ, подпишись на канал: https://t.me/dennyfun\n\nПосле подписки нажми "ПОДТВЕРДИТЬ"`,
             {
                 reply_markup: {
                     inline_keyboard: [[{ text: 'ПОДТВЕРДИТЬ', callback_data: 'check_subscription' }]]
@@ -260,11 +297,9 @@ bot.action('defi', async (ctx) => {
     const chatMember = await ctx.telegram.getChatMember(CHANNEL_USERNAME, ctx.from.id);
     if (['member', 'administrator', 'creator'].includes(chatMember.status)) {
         sendSectionData(ctx, 'DEFI', 'DEFI!A2:D');
-    } else {                                                                                                                                                
+    } else {
         ctx.reply(
-            `Привет! Теперь все гайды по крипте от известных инфлюенсеров в одном месте и ты их не потеряешь! Чтобы получить доступ, подпишись на канал: https://t.me/dennyfun
-
-После подписки нажми кнопку "ПОДТВЕРДИТЬ"`,
+            `Привет! Чтобы получить доступ, подпишись на канал: https://t.me/dennyfun\n\nПосле подписки нажми "ПОДТВЕРДИТЬ"`,
             {
                 reply_markup: {
                     inline_keyboard: [[{ text: 'ПОДТВЕРДИТЬ', callback_data: 'check_subscription' }]]
@@ -280,24 +315,13 @@ bot.action('ai', async (ctx) => {
         sendSectionData(ctx, 'AI', 'AI!A2:D');
     } else {
         ctx.reply(
-            `Привет! Теперь все гайды по крипте от известных инфлюенсеров в одном месте и ты их не потеряешь! Чтобы получить доступ, подпишись на канал: https://t.me/dennyfun
-
-После подписки нажми кнопку "ПОДТВЕРДИТЬ"`,
+            `Привет! Чтобы получить доступ, подпишись на канал: https://t.me/dennyfun\n\nПосле подписки нажми "ПОДТВЕРДИТЬ"`,
             {
                 reply_markup: {
                     inline_keyboard: [[{ text: 'ПОДТВЕРДИТЬ', callback_data: 'check_subscription' }]]
                 }
             }
         );
-    }
-});
-
-bot.action('main_menu', async (ctx) => {
-    try {
-        // Удаляем последнее сообщение
-        await ctx.deleteMessage();
-    } catch (error) {
-        console.error('Ошибка при удалении сообщения:', error);
     }
 });
 
