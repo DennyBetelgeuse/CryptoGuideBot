@@ -5,7 +5,7 @@ const fs = require('fs');
 
 const bot = new Telegraf(process.env.BOT_TOKEN);
 const CHANNEL_USERNAME = '@dennyfun';
-const ADMIN_ID = 546745364; // Ваш ID администратора
+const ADMIN_ID = example; // Ваш ID администратора
 
 // Файл для хранения ID пользователей
 const USER_IDS_FILE = 'user_ids.json';
@@ -37,7 +37,7 @@ const auth = new google.auth.GoogleAuth({
 const sheets = google.sheets({ version: 'v4', auth });
 
 async function getSheetData(range) {
-    const spreadsheetId = '1Uvsn_CE7y-aEwhFANOpuajoOp46emuLguX121a9RvxA';
+    const spreadsheetId = 'example';
     const response = await sheets.spreadsheets.values.get({
         spreadsheetId,
         range,
